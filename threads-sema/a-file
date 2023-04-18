@@ -1,0 +1,333 @@
+diff --git a/threads-sema/barrier.c b/threads-sema/barrier.c
+index f08af98..ae35451 100644
+--- a/threads-sema/barrier.c
++++ b/threads-sema/barrier.c
+@@ -2,6 +2,8 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <unistd.h>
++#include <pthread.h>
++#include <semaphore.h>
+ 
+ #include "common_threads.h"
+ 
+@@ -14,6 +16,12 @@
+ 
+ typedef struct __barrier_t {
+     // add semaphores and other information here
++    sem_t mutex; // protect access to count
++    sem_t turnstile1;
++    sem_t turnstile2;
++    int count;
++    int num_threads;
++
+ } barrier_t;
+ 
+ 
+@@ -22,10 +30,37 @@ barrier_t b;
+ 
+ void barrier_init(barrier_t *b, int num_threads) {
+     // initialization code goes here
++    sem_init(&b->mutex, 0, 1);
++    sem_init(&b->turnstile1, 0, 0);
++    sem_init(&b->turnstile2, 0, 1);
++    b->count = 0;
++    b->num_threads = num_threads;
+ }
+ 
+ void barrier(barrier_t *b) {
+     // barrier code goes here
++    sem_wait(&b->mutex);
++    b->count++;
++    if (b->count == b->num_threads) {
++        sem_wait(&b->turnstile2);
++        sem_post(&b->turnstile1);
++    }
++    sem_post(&b->mutex);
++
++    sem_wait(&b->turnstile1);
++    sem_post(&b->turnstile1);
++
++    sem_wait(&b->mutex);
++    b->count--;
++    if (b->count == 0) {
++        sem_wait(&b->turnstile1);
++        sem_post(&b->turnstile2);
++    }
++    sem_post(&b->mutex);
++
++    sem_wait(&b->turnstile2);
++    sem_post(&b->turnstile2);
++
+ }
+ 
+ //
+diff --git a/threads-sema/fork-join.c b/threads-sema/fork-join.c
+index b54cbd6..b9e1eed 100644
+--- a/threads-sema/fork-join.c
++++ b/threads-sema/fork-join.c
+@@ -1,6 +1,8 @@
+ #include <stdio.h>
+ #include <unistd.h>
+ #include <pthread.h>
++#include <semaphore.h>
++
+ #include "common_threads.h"
+ 
+ sem_t s; 
+@@ -8,6 +10,9 @@ sem_t s;
+ void *child(void *arg) {
+     printf("child\n");
+     // use semaphore here
++    sleep(1);
++    sem_post(&s);
++
+     return NULL;
+ }
+ 
+@@ -15,8 +20,11 @@ int main(int argc, char *argv[]) {
+     pthread_t p;
+     printf("parent: begin\n");
+     // init semaphore here
++    sem_init(&s, 0, 0);
++
+     Pthread_create(&p, NULL, child, NULL);
+     // use semaphore here
++    sem_wait(&s);
+     printf("parent: end\n");
+     return 0;
+ }
+diff --git a/threads-sema/reader-writer.c b/threads-sema/reader-writer.c
+index 8a495bc..8d119b7 100644
+--- a/threads-sema/reader-writer.c
++++ b/threads-sema/reader-writer.c
+@@ -1,62 +1,126 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <unistd.h>
++#include <pthread.h>
++#include <semaphore.h>
++
+ #include "common_threads.h"
+ 
+ //
+ // Your code goes in the structure and functions below
+ //
+ 
+-typedef struct __rwlock_t {
+-} rwlock_t;
++typedef struct __rwlock_t
++{
++    int readers;
++    int writers;
++    pthread_mutex_t lock;
++    pthread_cond_t readers_ok_to_read;
++    pthread_cond_t writers_ok_to_write;
++    int writer_active;
+ 
++} rwlock_t;
+ 
+-void rwlock_init(rwlock_t *rw) {
++void rwlock_init(rwlock_t *rw)
++{
++    rw->readers = 0;
++    rw->writers = 0;
++    rw->writer_active = 0;
++    pthread_mutex_init(&rw->lock, NULL);
++    pthread_cond_init(&rw->readers_ok_to_read, NULL);
++    pthread_cond_init(&rw->writers_ok_to_write, NULL);
+ }
+ 
+-void rwlock_acquire_readlock(rwlock_t *rw) {
++void rwlock_acquire_readlock(rwlock_t *rw)
++{
++    pthread_mutex_lock(&rw->lock);
++    while (rw->writers > 0 || rw->writer_active)
++    {
++        pthread_cond_wait(&rw->readers_ok_to_read, &rw->lock);
++    }
++    rw->readers++;
++    pthread_mutex_unlock(&rw->lock);
+ }
+ 
+-void rwlock_release_readlock(rwlock_t *rw) {
++void rwlock_release_readlock(rwlock_t *rw)
++{
++    pthread_mutex_lock(&rw->lock);
++    rw->readers--;
++    if (rw->readers == 0)
++    {
++        pthread_cond_signal(&rw->writers_ok_to_write);
++    }
++    pthread_mutex_unlock(&rw->lock);
+ }
+ 
+-void rwlock_acquire_writelock(rwlock_t *rw) {
++void rwlock_acquire_writelock(rwlock_t *rw)
++{
++    pthread_mutex_lock(&rw->lock);
++    while (rw->writers > 0 || rw->readers > 0)
++    {
++        pthread_cond_wait(&rw->writers_ok_to_write, &rw->lock);
++    }
++    rw->writers++;
++    rw->writer_active = 1;
++    pthread_mutex_unlock(&rw->lock);
+ }
+ 
+-void rwlock_release_writelock(rwlock_t *rw) {
++void rwlock_release_writelock(rwlock_t *rw)
++{
++    pthread_mutex_lock(&rw->lock);
++
++    rw->writers--;
++    rw->writer_active = 0;
++    if (rw->writers > 0)
++    {
++        pthread_cond_signal(&rw->writers_ok_to_write);
++    }
++    else
++    {
++        pthread_cond_broadcast(&rw->readers_ok_to_read);
++    }
++
++    pthread_cond_signal(&rw->writers_ok_to_write);
++    pthread_cond_broadcast(&rw->readers_ok_to_read);
++    pthread_mutex_unlock(&rw->lock);
+ }
+ 
+ //
+ // Don't change the code below (just use it!)
+-// 
++//
+ 
+ int loops;
+ int value = 0;
+ 
+ rwlock_t lock;
+ 
+-void *reader(void *arg) {
++void *reader(void *arg)
++{
+     int i;
+-    for (i = 0; i < loops; i++) {
+-	rwlock_acquire_readlock(&lock);
+-	printf("read %d\n", value);
+-	rwlock_release_readlock(&lock);
++    for (i = 0; i < loops; i++)
++    {
++        rwlock_acquire_readlock(&lock);
++        printf("read %d\n", value);
++        rwlock_release_readlock(&lock);
+     }
+     return NULL;
+ }
+ 
+-void *writer(void *arg) {
++void *writer(void *arg)
++{
+     int i;
+-    for (i = 0; i < loops; i++) {
+-	rwlock_acquire_writelock(&lock);
+-	value++;
+-	printf("write %d\n", value);
+-	rwlock_release_writelock(&lock);
++    for (i = 0; i < loops; i++)
++    {
++        rwlock_acquire_writelock(&lock);
++        value++;
++        printf("write %d\n", value);
++        rwlock_release_writelock(&lock);
+     }
+     return NULL;
+ }
+ 
+-int main(int argc, char *argv[]) {
++int main(int argc, char *argv[])
++{
+     assert(argc == 4);
+     int num_readers = atoi(argv[1]);
+     int num_writers = atoi(argv[2]);
+@@ -70,14 +134,14 @@ int main(int argc, char *argv[]) {
+ 
+     int i;
+     for (i = 0; i < num_readers; i++)
+-	Pthread_create(&pr[i], NULL, reader, NULL);
++        Pthread_create(&pr[i], NULL, reader, NULL);
+     for (i = 0; i < num_writers; i++)
+-	Pthread_create(&pw[i], NULL, writer, NULL);
++        Pthread_create(&pw[i], NULL, writer, NULL);
+ 
+     for (i = 0; i < num_readers; i++)
+-	Pthread_join(pr[i], NULL);
++        Pthread_join(pr[i], NULL);
+     for (i = 0; i < num_writers; i++)
+-	Pthread_join(pw[i], NULL);
++        Pthread_join(pw[i], NULL);
+ 
+     printf("end: value %d\n", value);
+ 
+diff --git a/threads-sema/rendezvous.c b/threads-sema/rendezvous.c
+index 6280516..d46670c 100644
+--- a/threads-sema/rendezvous.c
++++ b/threads-sema/rendezvous.c
+@@ -3,6 +3,9 @@
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <stdbool.h>
++#include <pthread.h>
++#include <semaphore.h>
++
+ 
+ #include "common_threads.h"
+ 
+@@ -14,6 +17,8 @@
+ 
+ typedef struct __rendezvous_t {
+         // add semaphores and other information here
++        sem_t sema_A;
++        sem_t sema_B;
+ } rendezvous_t;
+ 
+ 
+@@ -23,16 +28,28 @@ rendezvous_t b;
+ void
+ rendezvous_init(rendezvous_t *b) {
+         // initialization code goes here
++        sleep(1);
++        sem_init(&b->sema_A, 0, 0);
++        sem_init(&b->sema_B, 0, 0);
++
+ }
+ 
+ void
+ rendezvous_a(rendezvous_t *b) {
+         // called when thread A reaches the rendezvous
++        sleep(1);
++        sem_post(&b->sema_A);
++        sem_wait(&b->sema_B);
++
+ }
+ 
+ void
+ rendezvous_b(rendezvous_t *b) {
+         // called when thread B reaches the rendezvous
++        sleep(1);
++        sem_post(&b->sema_B);
++        sem_wait(&b->sema_A);
++
+ }
+ 
+ //
+@@ -57,6 +74,11 @@ myvec_init(int nelems) {
+         vec.elems = calloc(nelems, sizeof(vec.elems[0]));
+         vec.size = 0;
+         vec.capacity = nelems;
++
++        //assert(vec.elems != NULL); // XXX: not thread safe (but ok for now) 
++
++        printf("myvec_init: %d elements allocated (capacity = %d) (size = %d) (elems = %p) (vec = %p) (vecmtx = %p) (vec.elems = %p) (vec.size = %p) (vec.capacity = %p) (vecmtx = %p) (vecmtx = %p) (vecmtx = %p)" , nelems, vec.capacity, vec.size, vec.elems, &vec, &vecmtx, vec.elems, &vec.size, &vec.capacity, &vecmtx, &vecmtx, &vecmtx);
++
+ }
+ 
+ void
