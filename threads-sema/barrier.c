@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 #include "common_threads.h"
 
@@ -14,6 +16,12 @@
 
 typedef struct __barrier_t {
     // add semaphores and other information here
+    sem_t mutex; // protect access to count
+    sem_t turnstile1;
+    sem_t turnstile2;
+    int count;
+    int num_threads;
+
 } barrier_t;
 
 
@@ -22,10 +30,37 @@ barrier_t b;
 
 void barrier_init(barrier_t *b, int num_threads) {
     // initialization code goes here
+    sem_init(&b->mutex, 0, 1);
+    sem_init(&b->turnstile1, 0, 0);
+    sem_init(&b->turnstile2, 0, 1);
+    b->count = 0;
+    b->num_threads = num_threads;
 }
 
 void barrier(barrier_t *b) {
     // barrier code goes here
+    sem_wait(&b->mutex);
+    b->count++;
+    if (b->count == b->num_threads) {
+        sem_wait(&b->turnstile2);
+        sem_post(&b->turnstile1);
+    }
+    sem_post(&b->mutex);
+
+    sem_wait(&b->turnstile1);
+    sem_post(&b->turnstile1);
+
+    sem_wait(&b->mutex);
+    b->count--;
+    if (b->count == 0) {
+        sem_wait(&b->turnstile1);
+        sem_post(&b->turnstile2);
+    }
+    sem_post(&b->mutex);
+
+    sem_wait(&b->turnstile2);
+    sem_post(&b->turnstile2);
+
 }
 
 //

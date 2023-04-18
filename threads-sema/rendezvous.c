@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <pthread.h>
+#include <semaphore.h>
+
 
 #include "common_threads.h"
 
@@ -14,6 +17,8 @@
 
 typedef struct __rendezvous_t {
         // add semaphores and other information here
+        sem_t sema_A;
+        sem_t sema_B;
 } rendezvous_t;
 
 
@@ -23,16 +28,28 @@ rendezvous_t b;
 void
 rendezvous_init(rendezvous_t *b) {
         // initialization code goes here
+        sleep(1);
+        sem_init(&b->sema_A, 0, 0);
+        sem_init(&b->sema_B, 0, 0);
+
 }
 
 void
 rendezvous_a(rendezvous_t *b) {
         // called when thread A reaches the rendezvous
+        sleep(1);
+        sem_post(&b->sema_A);
+        sem_wait(&b->sema_B);
+
 }
 
 void
 rendezvous_b(rendezvous_t *b) {
         // called when thread B reaches the rendezvous
+        sleep(1);
+        sem_post(&b->sema_B);
+        sem_wait(&b->sema_A);
+
 }
 
 //
@@ -57,6 +74,11 @@ myvec_init(int nelems) {
         vec.elems = calloc(nelems, sizeof(vec.elems[0]));
         vec.size = 0;
         vec.capacity = nelems;
+
+        //assert(vec.elems != NULL); // XXX: not thread safe (but ok for now) 
+
+        printf("myvec_init: %d elements allocated (capacity = %d) (size = %d) (elems = %p) (vec = %p) (vecmtx = %p) (vec.elems = %p) (vec.size = %p) (vec.capacity = %p) (vecmtx = %p) (vecmtx = %p) (vecmtx = %p)" , nelems, vec.capacity, vec.size, vec.elems, &vec, &vecmtx, vec.elems, &vec.size, &vec.capacity, &vecmtx, &vecmtx, &vecmtx);
+
 }
 
 void
